@@ -3,9 +3,9 @@ set -euo pipefail
 
 ###############################################################################
 # setup.sh - Installs and configures NUT on a Raspberry Pi, making it a UPS
-#            server. Follows the PiMyLifeUp how-to and adds user prompts for
-#            driver/device selection.
-# 
+#            server. Follows the PiMyLifeUp how-to, with added prompts for
+#            driver/device selection and network interface settings.
+#
 # Usage: sudo ./setup.sh
 ###############################################################################
 
@@ -26,21 +26,20 @@ echo "Updating packages and installing NUT..."
 apt-get update -y
 apt-get install -y nut ups-tools
 
-echo "NUT installation and basic packages ensured."
+echo "NUT installation ensured."
 
 # 2. Prompt user to list USB devices and select a UPS
-echo "Detecting USB devices..."
+echo "Detecting USB devices with lsusb..."
 lsusb || { echo "ERROR: lsusb command failed. Exiting."; exit 1; }
 
 echo
 echo "Above are your USB devices. Please identify your UPS from the list."
-read -rp "Enter any identifiable part of your UPS line (e.g. 'AAAA:BBBB' or manufacturer name). Leave blank if unsure: " UPS_FILTER
+read -rp "Enter any identifiable part of your UPS line (e.g. 'AAAA:BBBB' or manufacturer). Leave blank if unsure: " UPS_FILTER
 
 if [[ -z "$UPS_FILTER" ]]; then
   echo "No filter provided. We'll just assume 'auto' port in configuration."
   UPS_PORT="auto"
 else
-  # This only checks lsusb output for info display. Actual port is often 'auto'.
   MATCHES=$(lsusb | grep -i "$UPS_FILTER" || true)
   if [[ -z "$MATCHES" ]]; then
     echo "No matching devices found for '$UPS_FILTER'. Falling back to 'auto'."
@@ -64,7 +63,6 @@ echo "Using port: $UPS_PORT"
 UPS_CONF_FILE="/etc/nut/ups.conf"
 echo "Configuring $UPS_CONF_FILE..."
 
-# Backup existing config if present
 if [[ -f "$UPS_CONF_FILE" ]]; then
   cp "$UPS_CONF_FILE" "${UPS_CONF_FILE}.bak.$(date +%s)"
 fi
@@ -87,7 +85,7 @@ fi
 echo "MODE=standalone" > "$NUT_CONF"
 echo "Configured standalone mode in $NUT_CONF."
 
-# 6. Configure /etc/nut/upsd.conf to listen on localhost and all interfaces
+# 6. Configure /etc/nut/upsd.conf
 UPSD_CONF="/etc/nut/upsd.conf"
 if [[ -f "$UPSD_CONF" ]]; then
   cp "$UPSD_CONF" "${UPSD_CONF}.bak.$(date +%s)"
@@ -95,11 +93,36 @@ fi
 
 cat > "$UPSD_CONF" <<EOF
 LISTEN 127.0.0.1 3493
-# Replace with your Pi's IP if you want network access outside of localhost.
-# E.g., LISTEN 192.168.1.100 3493
 EOF
 
 echo "Wrote default listen config to $UPSD_CONF."
+
+# 6.1 Optionally prompt to install net-tools and view IP addresses with ifconfig
+echo
+read -rp "Do you want to configure external network access now? [y/N]: " NET_ACCESS
+NET_ACCESS="${NET_ACCESS,,}"  # convert to lowercase
+
+if [[ "$NET_ACCESS" == "y" ]]; then
+  # Ensure ifconfig is available
+  if ! command -v ifconfig &>/dev/null; then
+    echo "'ifconfig' not found. Installing net-tools..."
+    apt-get install -y net-tools
+  fi
+
+  echo "Your current network interfaces (via ifconfig):"
+  ifconfig || { echo "ERROR: ifconfig command failed. Exiting."; exit 1; }
+
+  read -rp "Enter the Raspberry Pi IP address you want NUT to listen on (blank to skip): " SELECTED_IP
+  if [[ -n "$SELECTED_IP" ]]; then
+    # Simple sanity check for IPv4 format
+    if [[ "$SELECTED_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "Adding 'LISTEN $SELECTED_IP 3493' to $UPSD_CONF..."
+      echo "LISTEN $SELECTED_IP 3493" >> "$UPSD_CONF"
+    else
+      echo "WARNING: '$SELECTED_IP' doesn't look like a valid IPv4 address. Skipping."
+    fi
+  fi
+fi
 
 # 7. Configure /etc/nut/upsd.users
 UPSD_USERS="/etc/nut/upsd.users"
@@ -144,6 +167,6 @@ else
 fi
 
 echo
-echo "Setup complete. For network access, edit $UPSD_CONF to listen on the Pi’s IP."
-echo "Then restart services: sudo systemctl restart nut-server nut-monitor"
+echo "Setup complete. For additional network access, see $UPSD_CONF."
+echo "Restart services if you make changes: sudo systemctl restart nut-server nut-monitor"
 echo "Done!"
